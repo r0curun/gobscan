@@ -130,6 +130,15 @@ GobScan no requiere ninguna API key ni cuenta en servicios externos. Solo Python
 Esta herramienta es exclusivamente para **investigación de seguridad responsable** y **reporte de vulnerabilidades**. Úsala solo para reportar sitios comprometidos a las autoridades correspondientes.
 
 ---
+## Notas de uso
+
+### Google muestra resultados vacíos al abrir
+Es normal. Google a veces trata la URL generada con cautela la primera vez.
+**Solución:** En el navegador haz clic en "Herramientas → Última hora" 
+y luego selecciona cualquier rango de fecha. Esto fuerza a Google a 
+reejecutar la búsqueda y mostrar los resultados correctamente.
+
+No afecta el funcionamiento de la herramienta.
 
 ## Licencia
 
