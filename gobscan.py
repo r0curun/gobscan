@@ -482,7 +482,7 @@ Ejemplos:
     )
     parser.add_argument(
         "--country",
-        default="ec",
+        default=None,
         choices=GOV_DOMAINS.keys(),
         metavar="[" + ", ".join(GOV_DOMAINS.keys()) + "]",
         help="Código de país. Opciones: " + ", ".join(f"{k}={v}" for k, v in GOV_DOMAINS.items())
