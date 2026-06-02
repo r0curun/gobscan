@@ -338,13 +338,18 @@ def collect_urls(dork: str) -> list[dict]:
     return results
 
 
-def interactive_mode():
+def interactive_mode(preselected_country: str = ""):
     banner()
     print(f"{B}  ╔══ MODO INTERACTIVO ═══════════════════════════════╗{X}")
 
     # 1. País
-    country_code, domain_suffix = select_country()
-    print(f"  {G}[✓]{X} Dominio objetivo: {B}{domain_suffix}{X}")
+    if preselected_country and preselected_country in GOV_DOMAINS:
+        country_code = preselected_country
+        domain_suffix = GOV_DOMAINS[country_code]
+        print(f"  {G}[✓]{X} Dominio objetivo: {B}{domain_suffix}{X} (desde argumento)")
+    else:
+        country_code, domain_suffix = select_country()
+        print(f"  {G}[✓]{X} Dominio objetivo: {B}{domain_suffix}{X}")
 
     # 2. Preset
     preset = select_preset()
@@ -475,7 +480,13 @@ Ejemplos:
   python3 gobscan.py --check-deps
         """
     )
-    parser.add_argument("--country",    default="ec", help="Código de país (ec, pe, co...)")
+    parser.add_argument(
+        "--country",
+        default="ec",
+        choices=GOV_DOMAINS.keys(),
+        metavar="[" + ", ".join(GOV_DOMAINS.keys()) + "]",
+        help="Código de país. Opciones: " + ", ".join(f"{k}={v}" for k, v in GOV_DOMAINS.items())
+    )
     parser.add_argument("--list-dorks", action="store_true", help="Listar dorks para el país")
     parser.add_argument("--check-deps", action="store_true", help="Verificar dependencias")
     args = parser.parse_args()
@@ -487,7 +498,7 @@ Ejemplos:
         list_dorks(args.country)
         return
 
-    interactive_mode()
+    interactive_mode(preselected_country=args.country)
 
 
 if __name__ == "__main__":
