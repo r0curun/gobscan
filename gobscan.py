@@ -154,35 +154,181 @@ def open_and_search(dork: str):
     return url
 
 
-def verify_url(url: str, timeout: int = 8) -> dict:
-    """Verifica si la URL sigue infectada."""
-    info = {"reachable": False, "status_code": None,
-            "has_infection": False, "keywords_found": []}
+FALLBACK_KEYWORDS = [
+    "casino", "poker", "slots", "apuestas", "ruleta", "tragamonedas",
+    "blackjack", "baccarat", "bingo online",
+    "viagra", "cialis", "pharmacy", "farmacia", "levitra", "sildenafil",
+    "buy cheap pills", "online drugstore",
+    "bitcoin", "crypto", "binance", "investment", "trading",
+    "earn money online", "passive income", "forex",
+    "prestamos", "credito rapido", "loan", "payday loan",
+    "dinero rapido", "prestamo sin buro",
+]
+
+UA_RESEARCH = (
+    "Mozilla/5.0 (compatible; SecurityResearch/1.0; "
+    "+https://github.com/rocurun/gobscan)"
+)
+UA_GOOGLEBOT = (
+    "Mozilla/5.0 (compatible; Googlebot/2.1; "
+    "+http://www.google.com/bot.html)"
+)
+
+
+def _extract_infection_signals(html: str, keywords: list[str]) -> dict:
+    """
+    Parsea el HTML con BeautifulSoup buscando keywords en:
+      - texto visible normal
+      - <title>
+      - <meta name="keywords"> y <meta name="description">
+      - links o elementos con display:none / visibility:hidden
+      - comentarios HTML
+    Devuelve {"keywords_found": [...], "hidden_spam": bool, "infected_title": bool}
+    """
+    soup = BeautifulSoup(html, "html.parser")
+    found_in   = {}   # keyword → lista de ubicaciones donde se encontró
+
+    def register(kw, location):
+        found_in.setdefault(kw, [])
+        if location not in found_in[kw]:
+            found_in[kw].append(location)
+
+    kw_lower = [k.lower() for k in keywords]
+
+    # 1. <title>
+    title_tag = soup.find("title")
+    title_text = title_tag.get_text(separator=" ").lower() if title_tag else ""
+    for kw in kw_lower:
+        if kw in title_text:
+            register(kw, "title")
+
+    # 2. <meta keywords> y <meta description>
+    for meta in soup.find_all("meta"):
+        content = (meta.get("content") or "").lower()
+        name    = (meta.get("name")    or "").lower()
+        if name in ("keywords", "description"):
+            for kw in kw_lower:
+                if kw in content:
+                    register(kw, f"meta:{name}")
+
+    # 3. Elementos ocultos (display:none / visibility:hidden)
+    hidden_spam = False
+    for tag in soup.find_all(style=True):
+        style = tag.get("style", "").replace(" ", "").lower()
+        if "display:none" in style or "visibility:hidden" in style:
+            tag_text = tag.get_text(separator=" ").lower()
+            for kw in kw_lower:
+                if kw in tag_text:
+                    register(kw, "hidden_element")
+                    hidden_spam = True
+
+    # 4. Comentarios HTML
+    from bs4 import Comment
+    for comment in soup.find_all(string=lambda t: isinstance(t, Comment)):
+        comment_lower = comment.lower()
+        for kw in kw_lower:
+            if kw in comment_lower:
+                register(kw, "html_comment")
+
+    # 5. Texto visible general (captura lo que no cayó en categorías anteriores)
+    body_text = soup.get_text(separator=" ").lower()
+    for kw in kw_lower:
+        if kw in body_text:
+            register(kw, "body_text")
+
+    all_found   = list(found_in.keys())
+    title_hit   = any("title" in locs for locs in found_in.values())
+
+    return {
+        "keywords_found":  all_found,
+        "keywords_detail": found_in,      # dónde exactamente se encontró cada kw
+        "hidden_spam":     hidden_spam,
+        "infected_title":  title_hit,
+    }
+
+
+def verify_url(url: str, timeout: int = 8,
+               preset_keywords: list[str] | None = None) -> dict:
+    """
+    Verifica si la URL sigue infectada con blackhat SEO.
+
+    Mejoras respecto a la versión anterior:
+      - Usa las keywords del preset activo (no lista hardcodeada)
+      - Parsea <title>, <meta>, elementos ocultos y comentarios HTML
+      - Detecta cloaking básico comparando respuesta normal vs Googlebot
+      - Detecta redirects que sacan al usuario del dominio .gob
+    """
+    info = {
+        "reachable":       False,
+        "status_code":     None,
+        "has_infection":   False,
+        "keywords_found":  [],
+        "keywords_detail": {},
+        "hidden_spam":     False,
+        "infected_title":  False,
+        "cloaking":        False,
+        "redirect_hijack": False,
+        "final_url":       url,
+    }
     if not REQUESTS_AVAILABLE:
         return info
 
-    all_keywords = [
-        "casino", "poker", "slots", "apuestas", "ruleta", "tragamonedas",
-        "viagra", "cialis", "pharmacy", "farmacia", "bitcoin", "crypto",
-        "binance", "prestamo", "loan", "buy cheap"
-    ]
-    headers = {
-        "User-Agent": (
-            "Mozilla/5.0 (compatible; SecurityResearch/1.0; "
-            "+https://github.com/rocurun/gobscan)"
-        )
-    }
-    try:
-        r = requests.get(url, timeout=timeout, headers=headers,
-                         allow_redirects=True)
-        info["reachable"] = True
-        info["status_code"] = r.status_code
-        text_lower = r.text.lower()
-        found = [kw for kw in all_keywords if kw in text_lower]
-        info["keywords_found"] = found
-        info["has_infection"] = len(found) > 0
-    except Exception:
-        pass
+    keywords = preset_keywords if preset_keywords else FALLBACK_KEYWORDS
+
+    def fetch(ua: str) -> requests.Response | None:
+        try:
+            return requests.get(
+                url, timeout=timeout,
+                headers={"User-Agent": ua},
+                allow_redirects=True,
+            )
+        except Exception:
+            return None
+
+    # ── Request normal ──────────────────────────────────────────────────────
+    resp_normal = fetch(UA_RESEARCH)
+    if resp_normal is None:
+        return info   # no responde
+
+    info["reachable"]   = True
+    info["status_code"] = resp_normal.status_code
+    info["final_url"]   = resp_normal.url
+
+    # ── Redirect hijack: ¿el dominio final ya no es .gob? ──────────────────
+    from urllib.parse import urlparse
+    original_netloc = urlparse(url).netloc
+    final_netloc    = urlparse(resp_normal.url).netloc
+    if final_netloc and final_netloc != original_netloc:
+        # Si además el dominio final no es gubernamental → redirect sospechoso
+        gov_tlds = (".gob.", ".gov.", ".gub.")
+        if not any(t in final_netloc for t in gov_tlds):
+            info["redirect_hijack"] = True
+
+    # ── Parseo profundo de la respuesta normal ──────────────────────────────
+    signals_normal = _extract_infection_signals(resp_normal.text, keywords)
+    info.update(signals_normal)
+    info["has_infection"] = (
+        bool(signals_normal["keywords_found"])
+        or info["redirect_hijack"]
+    )
+
+    # ── Detección de cloaking: request con UA de Googlebot ──────────────────
+    # Solo hacemos el segundo request si el primero no encontró nada
+    # (si ya encontró infección no hace falta; el cloaking es cuando
+    #  Googlebot ve spam pero el usuario normal NO lo ve)
+    if not signals_normal["keywords_found"]:
+        resp_bot = fetch(UA_GOOGLEBOT)
+        if resp_bot is not None:
+            signals_bot = _extract_infection_signals(resp_bot.text, keywords)
+            if signals_bot["keywords_found"]:
+                # Googlebot ve spam pero UA normal no → cloaking clásico
+                info["cloaking"]       = True
+                info["has_infection"]  = True
+                info["keywords_found"] = signals_bot["keywords_found"]
+                info["keywords_detail"]= signals_bot["keywords_detail"]
+                info["hidden_spam"]    = signals_bot["hidden_spam"]
+                info["infected_title"] = signals_bot["infected_title"]
+
     return info
 
 
@@ -378,14 +524,23 @@ def interactive_mode(preselected_country: str = ""):
             f"\n  {C}¿Verificar URLs (confirmar infección activa)? [s/n]: {X}"
         ).strip().lower()
         if verify == "s":
+            # Construir lista de keywords activas para este preset
+            active_kw = preset.get("keywords", []) + extra_words or FALLBACK_KEYWORDS
+
             print(f"\n  {C}Verificando {len(results)} URLs...{X}")
             for r in results:
                 print(f"  {D}→ {r['url']}{X}", end="  ", flush=True)
-                info = verify_url(r["url"])
+                info = verify_url(r["url"], preset_keywords=active_kw)
                 r.update(info)
                 if info["has_infection"]:
                     kw = ", ".join(info["keywords_found"])
-                    print(f"{R}INFECTADO{X} [{kw}]")
+                    tags = []
+                    if info.get("cloaking"):        tags.append(f"{Y}CLOAKING{X}")
+                    if info.get("redirect_hijack"): tags.append(f"{Y}REDIRECT{X}")
+                    if info.get("hidden_spam"):     tags.append(f"{Y}OCULTO{X}")
+                    if info.get("infected_title"):  tags.append(f"{Y}TÍTULO{X}")
+                    tag_str = " ".join(tags)
+                    print(f"{R}INFECTADO{X} {tag_str} [{kw}]")
                 elif info["reachable"]:
                     print(f"{Y}activa, revisar manualmente{X}")
                 else:
